@@ -1,4 +1,4 @@
-import { jsx, jsxs, Fragment } from "react/jsx-runtime";
+import { jsx, jsxs } from "react/jsx-runtime";
 const plugin = ({ React, ui, store, sdk, icons }) => {
   const { useState, useMemo, useEffect } = React;
   const { BookOpen, ChevronLeft, ChevronRight, X } = icons;
@@ -13,21 +13,9 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       return fb;
     }
   };
-  const edgeStr = (disc) => {
-    const hits = Number(disc.data.hits) || 0;
-    const lastSeen = Number(disc.data.lastSeen) || Date.now();
-    const days = (Date.now() - lastSeen) / 864e5;
-    return Math.min(hits / 5, 1) * Math.exp(-0.1 * days);
-  };
-  const discover = (termId) => {
-    const all = store.getPosts("discovery");
-    const existing = all.find((d) => d.data.termId === termId);
-    const now = Date.now();
-    if (existing) {
-      store.update(existing.id, { hits: (Number(existing.data.hits) || 0) + 1, lastSeen: now });
-    } else {
-      store.add("discovery", { termId, hits: 1, firstSeen: now, lastSeen: now });
-    }
+  const helpers = () => {
+    var _a;
+    return (_a = sdk.shared.getState()) == null ? void 0 : _a.bqHelpers;
   };
   const segmentText = (text, lexEntries) => {
     const forms = [];
@@ -83,11 +71,94 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     if (current.trim()) slides.push(current.trim());
     return slides.length ? slides : [joined];
   };
+  const edgeStr = (disc) => {
+    var _a;
+    return ((_a = helpers()) == null ? void 0 : _a.edgeStr(disc)) ?? 0;
+  };
   const highlightStyle = (strength) => {
     if (strength === void 0) return { background: "rgba(100,116,139,0.25)", padding: "1px 3px", borderRadius: "3px", cursor: "pointer" };
     if (strength >= 0.8) return { background: "rgba(34,197,94,0.6)", padding: "1px 3px", borderRadius: "3px", cursor: "pointer", fontWeight: 600 };
     return { background: `rgba(34,197,94,${0.15 + strength * 0.55})`, padding: "1px 3px", borderRadius: "3px", cursor: "pointer" };
   };
+  function InlineMarkdown({ text, lexicon }) {
+    const parts = [];
+    let rest = text;
+    while (rest.length) {
+      const mb = rest.match(/\*\*(.+?)\*\*/);
+      const mi = rest.match(/\*(.+?)\*/);
+      const match = mb && mi ? mb.index <= mi.index ? mb : mi : mb || mi;
+      if (!match) {
+        parts.push({ text: rest });
+        break;
+      }
+      if (match.index > 0) parts.push({ text: rest.slice(0, match.index) });
+      parts.push({ text: match[1], bold: match[0].startsWith("**"), italic: !match[0].startsWith("**") });
+      rest = rest.slice(match.index + match[0].length);
+    }
+    return /* @__PURE__ */ jsx("span", { children: parts.map((p, i) => {
+      const inner = /* @__PURE__ */ jsx(HighlightedText, { text: p.text, lexicon }, i);
+      if (p.bold) return /* @__PURE__ */ jsx("strong", { children: inner }, i);
+      if (p.italic) return /* @__PURE__ */ jsx("em", { children: inner }, i);
+      return inner;
+    }) });
+  }
+  const proseStyle = {
+    fontSize: "15px",
+    lineHeight: 1.8,
+    color: "inherit"
+  };
+  const headingStyle = {
+    fontSize: "18px",
+    fontWeight: 700,
+    lineHeight: 1.4,
+    marginTop: "16px",
+    marginBottom: "8px"
+  };
+  const paraStyle = {
+    marginBottom: "12px",
+    lineHeight: 1.8,
+    fontSize: "15px"
+  };
+  const ulStyle = {
+    marginTop: "8px",
+    marginBottom: "12px",
+    paddingLeft: "24px",
+    listStyleType: "disc"
+  };
+  const liStyle = {
+    marginBottom: "6px",
+    lineHeight: 1.7,
+    fontSize: "15px",
+    paddingLeft: "4px"
+  };
+  function MarkdownBlock({ text, lexicon }) {
+    const lines = text.split("\n");
+    const blocks = [];
+    let listItems = [];
+    const flushList = () => {
+      if (!listItems.length) return;
+      blocks.push(
+        /* @__PURE__ */ jsx("ul", { style: ulStyle, children: listItems.map((li, j) => /* @__PURE__ */ jsx("li", { style: liStyle, children: /* @__PURE__ */ jsx(InlineMarkdown, { text: li, lexicon }) }, j)) }, `ul-${blocks.length}`)
+      );
+      listItems = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^#{2,3}\s/.test(line)) {
+        flushList();
+        blocks.push(/* @__PURE__ */ jsx("div", { style: headingStyle, children: line.replace(/^#{2,3}\s/, "") }, i));
+      } else if (/^[-*]\s/.test(line)) {
+        listItems.push(line.replace(/^[-*]\s/, ""));
+      } else if (line.trim() === "") {
+        flushList();
+      } else {
+        flushList();
+        blocks.push(/* @__PURE__ */ jsx("div", { style: paraStyle, children: /* @__PURE__ */ jsx(InlineMarkdown, { text: line, lexicon }) }, i));
+      }
+    }
+    flushList();
+    return /* @__PURE__ */ jsx("div", { style: proseStyle, children: blocks });
+  }
   function HighlightedText({ text, lexicon }) {
     const discoveries = store.usePosts("discovery");
     const dmap = useMemo(() => {
@@ -119,7 +190,8 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       /* @__PURE__ */ jsxs(ui.Row, { justify: "between", children: [
         /* @__PURE__ */ jsx(ui.Badge, { color: disc ? strength >= 0.8 ? "success" : strength > 0.3 ? "warning" : "error" : "neutral", children: disc ? `Siła: ${Math.round(strength * 100)}%` : "Nieodkryte" }),
         /* @__PURE__ */ jsx(ui.Button, { size: "xs", color: "primary", onClick: () => {
-          discover(activeTermId);
+          var _a;
+          (_a = helpers()) == null ? void 0 : _a.discover(activeTermId);
           sdk.log(`Odkryto: ${term.data.term}`, "ok");
         }, children: disc ? "Powtórz (+1)" : "Odkryj" })
       ] })
@@ -144,54 +216,52 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     ], [nodeContents, treeContents]);
     if (!treeId) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Otwórz BrainQuest i wybierz węzeł" });
     if (!postId || !node) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Kliknij węzeł w drzewie wiedzy" });
-    if (!slides.length && !quizzes.length) return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Spinner, {}) });
+    if (!slides.length && !quizzes.length) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Brak treści dla tego węzła" });
     const totalSlides = slides.length + (quizzes.length ? 1 : 0);
     const safeIdx = Math.min(slideIdx, totalSlides - 1);
     const isQuizSlide = safeIdx >= slides.length;
-    return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
-      /* @__PURE__ */ jsx(ui.Heading, { title: String(node.data.title) }),
-      !isQuizSlide && slides[safeIdx] && /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsx(ui.Stack, { children: slides[safeIdx].split("\n").map(
-        (line, i) => /^#{2,3}\s/.test(line) ? /* @__PURE__ */ jsx(ui.Text, { bold: true, children: line.replace(/^#{2,3}\s/, "") }, i) : /* @__PURE__ */ jsx("div", { style: { lineHeight: 1.7, fontSize: "15px" }, children: /* @__PURE__ */ jsx(HighlightedText, { text: line, lexicon }) }, i)
-      ) }) }),
-      isQuizSlide && /* @__PURE__ */ jsxs(ui.Stack, { children: [
-        /* @__PURE__ */ jsx(ui.Text, { bold: true, children: "Quiz" }),
-        quizzes.map((q) => /* @__PURE__ */ jsx(QuizCard, { quiz: q }, q.id))
-      ] }),
-      /* @__PURE__ */ jsx(TermPopover, {}),
-      totalSlides > 1 && /* @__PURE__ */ jsxs(ui.Row, { justify: "between", children: [
-        /* @__PURE__ */ jsxs(
-          ui.Button,
-          {
-            size: "sm",
-            outline: true,
-            disabled: safeIdx === 0,
-            onClick: () => useLocal.setState({ slideIdx: safeIdx - 1, activeTermId: null }),
-            children: [
-              /* @__PURE__ */ jsx(ChevronLeft, { size: 16 }),
-              " Wstecz"
-            ]
-          }
-        ),
-        /* @__PURE__ */ jsxs(ui.Text, { size: "xs", muted: true, children: [
-          safeIdx + 1,
-          " / ",
-          totalSlides
+    const goBack = () => {
+      var _a;
+      const bq2 = (_a = sdk.shared.getState()) == null ? void 0 : _a.bq;
+      if (bq2) sdk.shared.setState({ bq: { ...bq2, phase: "map" } });
+      sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
+    };
+    return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
+      ui.StageLayout,
+      {
+        top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
+          /* @__PURE__ */ jsx(ui.StepHeading, { step: `${safeIdx + 1}`, title: String(node.data.title), subtitle: `${safeIdx + 1} / ${totalSlides}` }),
+          !isQuizSlide && slides[safeIdx] && /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsx(ui.Stack, { children: /* @__PURE__ */ jsx(MarkdownBlock, { text: slides[safeIdx], lexicon }) }) }),
+          isQuizSlide && /* @__PURE__ */ jsxs(ui.Stack, { children: [
+            /* @__PURE__ */ jsx(ui.Text, { bold: true, children: "Quiz" }),
+            quizzes.map((q) => /* @__PURE__ */ jsx(QuizCard, { quiz: q }, q.id))
+          ] }),
+          /* @__PURE__ */ jsx(TermPopover, {})
         ] }),
-        /* @__PURE__ */ jsxs(
-          ui.Button,
-          {
-            size: "sm",
-            outline: true,
-            disabled: safeIdx >= totalSlides - 1,
-            onClick: () => useLocal.setState({ slideIdx: safeIdx + 1, activeTermId: null }),
-            children: [
-              "Dalej ",
-              /* @__PURE__ */ jsx(ChevronRight, { size: 16 })
-            ]
-          }
-        )
-      ] })
-    ] }) });
+        bottom: /* @__PURE__ */ jsxs(ui.Stack, { children: [
+          safeIdx < totalSlides - 1 ? /* @__PURE__ */ jsx(
+            ui.Button,
+            {
+              size: "lg",
+              color: "primary",
+              block: true,
+              onClick: () => useLocal.setState({ slideIdx: safeIdx + 1, activeTermId: null }),
+              children: "Dalej"
+            }
+          ) : /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: goBack, children: "Wróć do mapy" }),
+          safeIdx > 0 && /* @__PURE__ */ jsx(
+            ui.Button,
+            {
+              size: "lg",
+              outline: true,
+              block: true,
+              onClick: () => useLocal.setState({ slideIdx: safeIdx - 1, activeTermId: null }),
+              children: "Wstecz"
+            }
+          )
+        ] })
+      }
+    ) }) });
   }
   function QuizCard({ quiz }) {
     const [show, setShow] = useState(false);
@@ -228,32 +298,14 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
   }
   function LeftPanel() {
     const bq = sdk.shared((s) => s == null ? void 0 : s.bq);
-    const treeId = (bq == null ? void 0 : bq.treeId) || "";
-    const trees = store.usePosts("tree");
-    const lexicon = store.useChildren(treeId, "lexicon");
-    const discoveries = store.usePosts("discovery");
-    const discoveredCount = useMemo(() => {
-      const dset = new Set(discoveries.map((d) => String(d.data.termId)));
-      return lexicon.filter((l) => dset.has(l.id)).length;
-    }, [lexicon, discoveries]);
     return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
       /* @__PURE__ */ jsx(ui.Heading, { title: "Czytnik" }),
-      trees.map((t) => /* @__PURE__ */ jsx(
-        ui.ListItem,
-        {
-          active: treeId === t.id,
-          label: String(t.data.title),
-          onClick: () => sdk.shared.setState({ bq: { ...bq, treeId: t.id } })
-        },
-        t.id
-      )),
-      !trees.length && /* @__PURE__ */ jsx(ui.Text, { muted: true, size: "sm", children: "Załaduj drzewo w BrainQuest" }),
-      treeId && lexicon.length > 0 && /* @__PURE__ */ jsxs(Fragment, { children: [
-        /* @__PURE__ */ jsx(ui.Divider, {}),
-        /* @__PURE__ */ jsxs(ui.Stats, { children: [
-          /* @__PURE__ */ jsx(ui.Stat, { label: "Terminy", value: lexicon.length }),
-          /* @__PURE__ */ jsx(ui.Stat, { label: "Odkryte", value: discoveredCount, color: discoveredCount > 0 ? "success" : "muted" })
-        ] })
+      /* @__PURE__ */ jsxs(ui.Button, { size: "sm", outline: true, onClick: () => {
+        sdk.shared.setState({ bq: { ...bq, phase: "map" } });
+        sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
+      }, children: [
+        /* @__PURE__ */ jsx(ChevronLeft, { size: 14 }),
+        " Wróć do mapy"
       ] })
     ] }) });
   }
