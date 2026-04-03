@@ -1,10 +1,12 @@
 import { jsx, jsxs } from "react/jsx-runtime";
 const plugin = ({ React, ui, store, sdk, icons }) => {
   const { useState, useMemo, useEffect } = React;
-  const { BookOpen, ChevronLeft, ChevronRight, X } = icons;
+  const { BookOpen, ChevronLeft, ChevronRight, X, Link2 } = icons;
   const useLocal = sdk.create(() => ({
     slideIdx: 0,
-    activeTermId: null
+    activeTermId: null,
+    connectionAnswer: null,
+    connectionRevealed: false
   }));
   const jparse = (s, fb) => {
     try {
@@ -197,68 +199,223 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       ] })
     ] }) });
   }
+  const termsInNode = (nodeId, lexicon) => {
+    const contents = store.getPosts("content").filter((c) => c.parentId === nodeId);
+    const fullText = contents.filter((c) => String(c.data.contentType) !== "quiz").map((c) => String(c.data.text || "").toLowerCase()).join(" ");
+    if (!fullText) return /* @__PURE__ */ new Set();
+    const found = /* @__PURE__ */ new Set();
+    for (const lex of lexicon) {
+      const term = String(lex.data.term || "").toLowerCase();
+      if (fullText.includes(term)) {
+        found.add(lex.id);
+        continue;
+      }
+      const forms = jparse(String(lex.data.forms || "[]"), []);
+      if (forms.some((f) => f.length >= 3 && fullText.includes(f.toLowerCase()))) found.add(lex.id);
+    }
+    return found;
+  };
+  const termsForNode = (nodeId, lexicon) => {
+    const fromContent = termsInNode(nodeId, lexicon);
+    if (fromContent.size > 0) return fromContent;
+    const nodeRec = store.get(nodeId);
+    if (!nodeRec) return /* @__PURE__ */ new Set();
+    const title = String(nodeRec.data.title || "").toLowerCase();
+    const branch = String(nodeRec.data.branch || "").toLowerCase();
+    const matched = /* @__PURE__ */ new Set();
+    for (const lex of lexicon) {
+      const term = String(lex.data.term || "").toLowerCase();
+      const cat = String(lex.data.category || "").toLowerCase();
+      if (title.includes(term) || term.includes(title) || cat === branch)
+        matched.add(lex.id);
+    }
+    return matched;
+  };
+  function buildConnections(treeId, postId, nodeTitle, lexicon, nodes) {
+    const myTerms = termsInNode(postId, lexicon);
+    if (!myTerms.size) return [];
+    const candidates = [];
+    for (const other of nodes) {
+      if (other.id === postId) continue;
+      const otherTerms = termsForNode(other.id, lexicon);
+      const shared = lexicon.filter((l) => myTerms.has(l.id) && otherTerms.has(l.id));
+      if (shared.length > 0) candidates.push({ node: other, shared });
+    }
+    if (!candidates.length) return [];
+    candidates.sort((a, b) => b.shared.length - a.shared.length);
+    const best = candidates.slice(0, 2);
+    const challenges = [];
+    for (const { node: correct, shared } of best) {
+      const linkTerm = [...shared].sort((a, b) => String(b.data.term).length - String(a.data.term).length)[0];
+      const termName = String(linkTerm.data.term);
+      const wrong = nodes.filter((n) => n.id !== postId && n.id !== correct.id).sort(() => Math.random() - 0.5).slice(0, 2);
+      const options = [correct, ...wrong].map((n) => ({ id: n.id, title: String(n.data.title) })).sort(() => Math.random() - 0.5);
+      if (options.length < 2) continue;
+      challenges.push({
+        contextTitle: termName,
+        contextType: String(correct.data.branch || ""),
+        currentNodeTitle: nodeTitle,
+        correctNodeId: correct.id,
+        correctNodeTitle: String(correct.data.title),
+        correctBranch: String(correct.data.branch || ""),
+        options
+      });
+    }
+    return challenges;
+  }
+  function ConnectionScreen({ challenge }) {
+    const { connectionAnswer, connectionRevealed } = useLocal();
+    const isCorrect = connectionAnswer === challenge.correctNodeId;
+    const goldBg = "rgba(245,158,11,0.12)";
+    const goldBorder = "2px solid rgba(245,158,11,0.4)";
+    return /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
+      /* @__PURE__ */ jsxs(ui.Row, { gap: "sm", children: [
+        /* @__PURE__ */ jsx(Link2, { size: 18, style: { color: "#f59e0b" } }),
+        /* @__PURE__ */ jsx(ui.Text, { bold: true, children: "Połącz konteksty" })
+      ] }),
+      /* @__PURE__ */ jsxs("div", { style: { background: goldBg, border: goldBorder, borderRadius: "8px", padding: "12px" }, children: [
+        /* @__PURE__ */ jsxs(ui.Text, { size: "sm", children: [
+          "W ",
+          /* @__PURE__ */ jsx("strong", { children: challenge.currentNodeTitle }),
+          " pojawia się ",
+          /* @__PURE__ */ jsx("strong", { children: challenge.contextTitle }),
+          "."
+        ] }),
+        /* @__PURE__ */ jsxs(ui.Text, { size: "sm", bold: true, style: { marginTop: "8px" }, children: [
+          "Gdzie jeszcze spotkasz ",
+          /* @__PURE__ */ jsx("strong", { children: challenge.contextTitle }),
+          "?"
+        ] })
+      ] }),
+      /* @__PURE__ */ jsx(ui.Stack, { gap: "sm", children: challenge.options.map((opt) => {
+        const selected = connectionAnswer === opt.id;
+        const correct = opt.id === challenge.correctNodeId;
+        let color;
+        if (connectionRevealed) {
+          color = correct ? "success" : selected ? "error" : void 0;
+        } else if (selected) {
+          color = "primary";
+        }
+        return /* @__PURE__ */ jsxs(
+          ui.Button,
+          {
+            block: true,
+            outline: !selected || connectionRevealed && !correct,
+            color,
+            onClick: () => {
+              var _a;
+              if (connectionRevealed) return;
+              useLocal.setState({ connectionAnswer: opt.id, connectionRevealed: true });
+              if (opt.id === challenge.correctNodeId) {
+                (_a = helpers()) == null ? void 0 : _a.discover(challenge.correctNodeId);
+              }
+            },
+            children: [
+              opt.title,
+              connectionRevealed && correct && " ✓"
+            ]
+          },
+          opt.id
+        );
+      }) }),
+      connectionRevealed && /* @__PURE__ */ jsx("div", { style: { background: isCorrect ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", borderRadius: "8px", padding: "12px" }, children: /* @__PURE__ */ jsxs(ui.Stack, { gap: "sm", children: [
+        /* @__PURE__ */ jsx(ui.Text, { size: "sm", children: isCorrect ? `Tak! ${challenge.contextTitle} łączy ${challenge.currentNodeTitle} z ${challenge.correctNodeTitle}.` : `${challenge.contextTitle} pojawia się też w ${challenge.correctNodeTitle}. Zapamiętaj to połączenie!` }),
+        /* @__PURE__ */ jsx(ui.Button, { size: "sm", color: isCorrect ? "primary" : "neutral", outline: true, onClick: () => {
+          var _a;
+          const bq = (_a = sdk.shared.getState()) == null ? void 0 : _a.bq;
+          sdk.shared.setState({
+            bq: { ...bq, phase: "map" },
+            bqFlash: { from: challenge.currentNodeTitle, to: challenge.correctNodeTitle, context: challenge.contextTitle }
+          });
+          sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
+        }, children: "Zobacz na mapie" })
+      ] }) })
+    ] }) });
+  }
   function SlideReader() {
     const bq = sdk.shared((s) => s == null ? void 0 : s.bq);
     const treeId = (bq == null ? void 0 : bq.treeId) || "";
     const postId = (bq == null ? void 0 : bq.postId) || "";
-    const { slideIdx } = useLocal();
+    const nodeId = (bq == null ? void 0 : bq.nodeId) || "";
+    const { slideIdx, connectionRevealed } = useLocal();
+    useEffect(() => {
+      useLocal.setState({ slideIdx: 0, activeTermId: null, connectionAnswer: null, connectionRevealed: false });
+    }, [postId]);
+    const [loading, setLoading] = useState(false);
+    useEffect(() => {
+      if (!treeId || !nodeId) return;
+      const h = helpers();
+      if (h == null ? void 0 : h.loadNodeContent) {
+        setLoading(true);
+        h.loadNodeContent(treeId, nodeId).finally(() => setLoading(false));
+      }
+    }, [treeId, nodeId]);
     const node = store.usePost(postId);
     const nodeContents = store.useChildren(postId, "content");
-    const treeContents = store.useChildren(treeId, "content");
     const lexicon = store.useChildren(treeId, "lexicon");
+    const nodes = store.useChildren(treeId, "node");
     const slides = useMemo(() => {
       const texts = nodeContents.filter((c) => String(c.data.contentType) !== "quiz").map((c) => String(c.data.text));
       return splitSlides(texts);
     }, [nodeContents]);
-    const quizzes = useMemo(() => [
-      ...nodeContents.filter((c) => String(c.data.contentType) === "quiz"),
-      ...treeContents.filter((c) => String(c.data.contentType) === "quiz")
-    ], [nodeContents, treeContents]);
+    const quizzes = useMemo(
+      () => nodeContents.filter((c) => String(c.data.contentType) === "quiz"),
+      [nodeContents]
+    );
+    const steps = useMemo(() => {
+      const nodeTitle = node ? String(node.data.title) : "";
+      const connections = treeId && postId ? buildConnections(treeId, postId, nodeTitle, lexicon, nodes) : [];
+      const seq = [];
+      for (const s of slides) seq.push({ kind: "slide", text: s });
+      if (quizzes.length) seq.push({ kind: "quiz" });
+      for (const c of connections) seq.push({ kind: "connection", challenge: c });
+      return seq;
+    }, [slides, quizzes.length, node, treeId, postId, lexicon, nodes]);
     if (!treeId) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Otwórz BrainQuest i wybierz węzeł" });
     if (!postId || !node) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Kliknij węzeł w drzewie wiedzy" });
-    if (!slides.length && !quizzes.length) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Brak treści dla tego węzła" });
-    const totalSlides = slides.length + (quizzes.length ? 1 : 0);
-    const safeIdx = Math.min(slideIdx, totalSlides - 1);
-    const isQuizSlide = safeIdx >= slides.length;
+    if (loading) return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
+      /* @__PURE__ */ jsx(ui.Spinner, {}),
+      /* @__PURE__ */ jsx(ui.Text, { muted: true, size: "sm", children: "Ładowanie treści..." })
+    ] }) });
+    if (!steps.length) return /* @__PURE__ */ jsx(ui.Placeholder, { text: "Brak treści dla tego węzła" });
+    const safeIdx = Math.min(slideIdx, steps.length - 1);
+    const step = steps[safeIdx];
+    const isConnection = step.kind === "connection";
     const goBack = () => {
       var _a;
       const bq2 = (_a = sdk.shared.getState()) == null ? void 0 : _a.bq;
       if (bq2) sdk.shared.setState({ bq: { ...bq2, phase: "map" } });
       sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
     };
+    const goNext = () => useLocal.setState({
+      slideIdx: safeIdx + 1,
+      activeTermId: null,
+      connectionAnswer: null,
+      connectionRevealed: false
+    });
+    const goPrev = () => useLocal.setState({
+      slideIdx: safeIdx - 1,
+      activeTermId: null,
+      connectionAnswer: null,
+      connectionRevealed: false
+    });
+    const canAdvance = !isConnection || connectionRevealed;
     return /* @__PURE__ */ jsx(ui.Page, { children: /* @__PURE__ */ jsx(ui.Stage, { children: /* @__PURE__ */ jsx(
       ui.StageLayout,
       {
         top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
-          /* @__PURE__ */ jsx(ui.StepHeading, { step: `${safeIdx + 1}`, title: String(node.data.title), subtitle: `${safeIdx + 1} / ${totalSlides}` }),
-          !isQuizSlide && slides[safeIdx] && /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsx(ui.Stack, { children: /* @__PURE__ */ jsx(MarkdownBlock, { text: slides[safeIdx], lexicon }) }) }),
-          isQuizSlide && /* @__PURE__ */ jsxs(ui.Stack, { children: [
+          /* @__PURE__ */ jsx(ui.StepHeading, { step: `${safeIdx + 1}`, title: String(node.data.title), subtitle: `${safeIdx + 1} / ${steps.length}` }),
+          step.kind === "slide" && /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsx(ui.Stack, { children: /* @__PURE__ */ jsx(MarkdownBlock, { text: step.text, lexicon }) }) }),
+          step.kind === "connection" && /* @__PURE__ */ jsx(ConnectionScreen, { challenge: step.challenge }),
+          step.kind === "quiz" && /* @__PURE__ */ jsxs(ui.Stack, { children: [
             /* @__PURE__ */ jsx(ui.Text, { bold: true, children: "Quiz" }),
             quizzes.map((q) => /* @__PURE__ */ jsx(QuizCard, { quiz: q }, q.id))
           ] }),
           /* @__PURE__ */ jsx(TermPopover, {})
         ] }),
         bottom: /* @__PURE__ */ jsxs(ui.Stack, { children: [
-          safeIdx < totalSlides - 1 ? /* @__PURE__ */ jsx(
-            ui.Button,
-            {
-              size: "lg",
-              color: "primary",
-              block: true,
-              onClick: () => useLocal.setState({ slideIdx: safeIdx + 1, activeTermId: null }),
-              children: "Dalej"
-            }
-          ) : /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: goBack, children: "Wróć do mapy" }),
-          safeIdx > 0 && /* @__PURE__ */ jsx(
-            ui.Button,
-            {
-              size: "lg",
-              outline: true,
-              block: true,
-              onClick: () => useLocal.setState({ slideIdx: safeIdx - 1, activeTermId: null }),
-              children: "Wstecz"
-            }
-          )
+          safeIdx < steps.length - 1 ? /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, disabled: !canAdvance, onClick: goNext, children: isConnection && !connectionRevealed ? "Odpowiedz, by kontynuować" : "Dalej" }) : /* @__PURE__ */ jsx(ui.Button, { size: "lg", color: "primary", block: true, onClick: goBack, children: "Wróć do mapy" }),
+          safeIdx > 0 && /* @__PURE__ */ jsx(ui.Button, { size: "lg", outline: true, block: true, onClick: goPrev, children: "Wstecz" })
         ] })
       }
     ) }) });
@@ -312,7 +469,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
   sdk.registerView("bqr.left", { slot: "left", component: LeftPanel });
   sdk.registerView("bqr.center", { slot: "center", component: SlideReader });
   sdk.registerView("bqr.right", { slot: "right", component: DiscoveredPanel });
-  return { id: "plugin-brain-quest-reader", label: "BQ Czytnik", icon: BookOpen, version: "0.2.0" };
+  return { id: "plugin-brain-quest-reader", label: "BQ Czytnik", icon: BookOpen, version: "0.3.0" };
 };
 export {
   plugin as default
