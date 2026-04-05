@@ -178,17 +178,24 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     const { activeTermId } = useLocal();
     const term = store.usePost(activeTermId || "");
     const discoveries = store.usePosts("discovery");
+    const bqState = sdk.shared((s) => s == null ? void 0 : s.bq);
+    const allTerms = store.useChildren((bqState == null ? void 0 : bqState.treeId) || "", "term");
+    const [showContent, setShowContent] = useState(false);
     if (!term || !activeTermId) return null;
     const disc = discoveries.find((d) => d.data.termId === activeTermId);
     const strength = disc ? edgeStr(disc) : 0;
+    const termContent = jparse(String(term.data.content || "null"), null);
+    const termNodes = jparse(String(term.data.nodes || "[]"), []);
     return /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsxs(ui.Stack, { children: [
       /* @__PURE__ */ jsxs(ui.Row, { justify: "between", children: [
         /* @__PURE__ */ jsx(ui.Text, { bold: true, children: String(term.data.term) }),
-        /* @__PURE__ */ jsx("span", { style: { cursor: "pointer" }, onClick: () => useLocal.setState({ activeTermId: null }), children: /* @__PURE__ */ jsx(X, { size: 16 }) })
+        /* @__PURE__ */ jsx("span", { style: { cursor: "pointer" }, onClick: () => {
+          useLocal.setState({ activeTermId: null });
+          setShowContent(false);
+        }, children: /* @__PURE__ */ jsx(X, { size: 16 }) })
       ] }),
       /* @__PURE__ */ jsx(ui.Text, { size: "sm", children: String(term.data.definition) }),
-      term.data.example && /* @__PURE__ */ jsx(ui.Text, { size: "xs", muted: true, children: String(term.data.example) }),
-      term.data.category && /* @__PURE__ */ jsx(ui.Badge, { color: "info", children: String(term.data.category) }),
+      termNodes.length > 0 && /* @__PURE__ */ jsx(ui.Row, { gap: "sm", children: termNodes.map((nid) => /* @__PURE__ */ jsx(ui.Badge, { color: "info", children: nid }, nid)) }),
       /* @__PURE__ */ jsxs(ui.Row, { justify: "between", children: [
         /* @__PURE__ */ jsx(ui.Badge, { color: disc ? strength >= 0.8 ? "success" : strength > 0.3 ? "warning" : "error" : "neutral", children: disc ? `Siła: ${Math.round(strength * 100)}%` : "Nieodkryte" }),
         /* @__PURE__ */ jsx(ui.Button, { size: "xs", color: "primary", onClick: () => {
@@ -196,57 +203,39 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
           (_a = helpers()) == null ? void 0 : _a.discover(activeTermId);
           sdk.log(`Odkryto: ${term.data.term}`, "ok");
         }, children: disc ? "Powtórz (+1)" : "Odkryj" })
-      ] })
+      ] }),
+      termContent && !showContent && /* @__PURE__ */ jsx(ui.Button, { size: "xs", outline: true, onClick: () => setShowContent(true), children: "Czytaj więcej" }),
+      termContent && showContent && termContent.map((slide, i) => /* @__PURE__ */ jsx(MarkdownBlock, { text: slide, lexicon: allTerms }, i))
     ] }) });
   }
-  const termsInNode = (nodeId, lexicon) => {
-    const contents = store.getPosts("content").filter((c) => c.parentId === nodeId);
-    const fullText = contents.filter((c) => String(c.data.contentType) !== "quiz").map((c) => String(c.data.text || "").toLowerCase()).join(" ");
-    if (!fullText) return /* @__PURE__ */ new Set();
-    const found = /* @__PURE__ */ new Set();
-    for (const lex of lexicon) {
-      const term = String(lex.data.term || "").toLowerCase();
-      if (fullText.includes(term)) {
-        found.add(lex.id);
-        continue;
-      }
-      const forms = jparse(String(lex.data.forms || "[]"), []);
-      if (forms.some((f) => f.length >= 3 && fullText.includes(f.toLowerCase()))) found.add(lex.id);
-    }
-    return found;
-  };
-  const termsForNode = (nodeId, lexicon) => {
-    const fromContent = termsInNode(nodeId, lexicon);
-    if (fromContent.size > 0) return fromContent;
-    const nodeRec = store.get(nodeId);
-    if (!nodeRec) return /* @__PURE__ */ new Set();
-    const title = String(nodeRec.data.title || "").toLowerCase();
-    const branch = String(nodeRec.data.branch || "").toLowerCase();
-    const matched = /* @__PURE__ */ new Set();
-    for (const lex of lexicon) {
-      const term = String(lex.data.term || "").toLowerCase();
-      const cat = String(lex.data.category || "").toLowerCase();
-      if (title.includes(term) || term.includes(title) || cat === branch)
-        matched.add(lex.id);
-    }
-    return matched;
-  };
-  function buildConnections(treeId, postId, nodeTitle, lexicon, nodes) {
-    const myTerms = termsInNode(postId, lexicon);
-    if (!myTerms.size) return [];
+  function buildConnections(treeId, postId, nodeTitle, terms, nodes) {
+    const node = store.get(postId);
+    if (!node) return [];
+    const currentNodeId = String(node.data.nodeId);
+    const myTerms = terms.filter((t) => {
+      const tNodes = jparse(String(t.data.nodes || "[]"), []);
+      return tNodes.includes(currentNodeId);
+    });
     const candidates = [];
-    for (const other of nodes) {
-      if (other.id === postId) continue;
-      const otherTerms = termsForNode(other.id, lexicon);
-      const shared = lexicon.filter((l) => myTerms.has(l.id) && otherTerms.has(l.id));
-      if (shared.length > 0) candidates.push({ node: other, shared });
+    for (const term of myTerms) {
+      const tNodes = jparse(String(term.data.nodes || "[]"), []);
+      for (const otherNid of tNodes) {
+        if (otherNid === currentNodeId) continue;
+        const otherNode = nodes.find((n) => String(n.data.nodeId) === otherNid);
+        if (otherNode) candidates.push({ nodeRec: otherNode, term });
+      }
     }
     if (!candidates.length) return [];
-    candidates.sort((a, b) => b.shared.length - a.shared.length);
-    const best = candidates.slice(0, 2);
+    const seen = /* @__PURE__ */ new Set();
+    const best = [];
+    for (const c of candidates) {
+      if (seen.has(c.nodeRec.id)) continue;
+      seen.add(c.nodeRec.id);
+      best.push(c);
+      if (best.length >= 2) break;
+    }
     const challenges = [];
-    for (const { node: correct, shared } of best) {
-      const linkTerm = [...shared].sort((a, b) => String(b.data.term).length - String(a.data.term).length)[0];
+    for (const { nodeRec: correct, term: linkTerm } of best) {
       const termName = String(linkTerm.data.term);
       const wrong = nodes.filter((n) => n.id !== postId && n.id !== correct.id).sort(() => Math.random() - 0.5).slice(0, 2);
       const options = [correct, ...wrong].map((n) => ({ id: n.id, title: String(n.data.title) })).sort(() => Math.random() - 0.5);
@@ -354,6 +343,12 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     const nodeContents = store.useChildren(postId, "content");
     const lexicon = store.useChildren(treeId, "lexicon");
     const nodes = store.useChildren(treeId, "node");
+    const nodeLexicon = useMemo(() => {
+      return lexicon.filter((lex) => {
+        const ns = jparse(String(lex.data.nodes || "[]"), []);
+        return ns.includes(nodeId);
+      });
+    }, [lexicon, nodeId]);
     const slides = useMemo(() => {
       const texts = nodeContents.filter((c) => String(c.data.contentType) !== "quiz").map((c) => String(c.data.text));
       return splitSlides(texts);
@@ -405,7 +400,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       {
         top: /* @__PURE__ */ jsxs(ui.Stack, { gap: "md", children: [
           /* @__PURE__ */ jsx(ui.StepHeading, { step: `${safeIdx + 1}`, title: String(node.data.title), subtitle: `${safeIdx + 1} / ${steps.length}` }),
-          step.kind === "slide" && /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsx(ui.Stack, { children: /* @__PURE__ */ jsx(MarkdownBlock, { text: step.text, lexicon }) }) }),
+          step.kind === "slide" && /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsx(ui.Stack, { children: /* @__PURE__ */ jsx(MarkdownBlock, { text: step.text, lexicon: nodeLexicon }) }) }),
           step.kind === "connection" && /* @__PURE__ */ jsx(ConnectionScreen, { challenge: step.challenge }),
           step.kind === "quiz" && /* @__PURE__ */ jsxs(ui.Stack, { children: [
             /* @__PURE__ */ jsx(ui.Text, { bold: true, children: "Quiz" }),
