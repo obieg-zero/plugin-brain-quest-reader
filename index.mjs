@@ -1,7 +1,7 @@
-import { jsx, jsxs } from "react/jsx-runtime";
+import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 const plugin = ({ React, ui, store, sdk, icons }) => {
   const { useState, useMemo, useEffect } = React;
-  const { BookOpen, ChevronLeft, ChevronRight, X, Link2 } = icons;
+  const { BookOpen, ChevronLeft, X, Link2 } = icons;
   const useLocal = sdk.create(() => ({
     slideIdx: 0,
     activeTermId: null,
@@ -18,6 +18,10 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
   const helpers = () => {
     var _a;
     return (_a = sdk.shared.getState()) == null ? void 0 : _a.bqHelpers;
+  };
+  const toMap = (extra = {}) => {
+    var _a, _b;
+    return (_b = (_a = helpers()) == null ? void 0 : _a.nav) == null ? void 0 : _b.toMap(extra);
   };
   const segmentText = (text, lexEntries) => {
     const forms = [];
@@ -77,10 +81,9 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     var _a;
     return ((_a = helpers()) == null ? void 0 : _a.edgeStr(disc)) ?? 0;
   };
-  const highlightStyle = (strength) => {
-    if (strength === void 0) return { background: "rgba(100,116,139,0.25)", padding: "1px 3px", borderRadius: "3px", cursor: "pointer" };
-    if (strength >= 0.8) return { background: "rgba(34,197,94,0.6)", padding: "1px 3px", borderRadius: "3px", cursor: "pointer", fontWeight: 600 };
-    return { background: `rgba(34,197,94,${0.15 + strength * 0.55})`, padding: "1px 3px", borderRadius: "3px", cursor: "pointer" };
+  const strengthColor = (strength) => {
+    if (strength === void 0 || strength < 0.15) return "muted";
+    return "success";
   };
   function InlineMarkdown({ text, lexicon }) {
     const parts = [];
@@ -98,7 +101,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       rest = rest.slice(match.index + match[0].length);
     }
     return /* @__PURE__ */ jsx("span", { children: parts.map((p, i) => {
-      const inner = /* @__PURE__ */ jsx(HighlightedText, { text: p.text, lexicon }, i);
+      const inner = /* @__PURE__ */ jsx(TermSpans, { text: p.text, lexicon }, i);
       if (p.bold) return /* @__PURE__ */ jsx("strong", { children: inner }, i);
       if (p.italic) return /* @__PURE__ */ jsx("em", { children: inner }, i);
       return inner;
@@ -111,7 +114,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     const flushList = () => {
       if (!listItems.length) return;
       blocks.push(
-        /* @__PURE__ */ jsx("ul", { style: { paddingLeft: "24px", listStyleType: "disc" }, children: listItems.map((li, j) => /* @__PURE__ */ jsx("li", { children: /* @__PURE__ */ jsx(ui.Text, { children: /* @__PURE__ */ jsx(InlineMarkdown, { text: li, lexicon }) }) }, j)) }, `ul-${blocks.length}`)
+        /* @__PURE__ */ jsx(ui.Bullets, { items: listItems.map((li, j) => /* @__PURE__ */ jsx(InlineMarkdown, { text: li, lexicon }, j)) }, `ul-${blocks.length}`)
       );
       listItems = [];
     };
@@ -132,7 +135,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     flushList();
     return /* @__PURE__ */ jsx(ui.Stack, { gap: "sm", children: blocks });
   }
-  function HighlightedText({ text, lexicon }) {
+  function TermSpans({ text, lexicon }) {
     const discoveries = store.usePosts("discovery");
     const dmap = useMemo(() => {
       const m = {};
@@ -140,9 +143,10 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       return m;
     }, [discoveries]);
     const segments = useMemo(() => segmentText(text, lexicon), [text, lexicon]);
-    return /* @__PURE__ */ jsx("span", { children: segments.map((seg, i) => {
+    return /* @__PURE__ */ jsx(Fragment, { children: segments.map((seg, i) => {
       if (!seg.termId) return /* @__PURE__ */ jsx("span", { children: seg.text }, i);
-      return /* @__PURE__ */ jsx("span", { style: highlightStyle(dmap[seg.termId]), onClick: () => useLocal.setState({ activeTermId: seg.termId }), children: seg.text }, i);
+      const termId = seg.termId;
+      return /* @__PURE__ */ jsx("span", { onClick: () => useLocal.setState({ activeTermId: termId }), children: /* @__PURE__ */ jsx(ui.HighlightedText, { color: strengthColor(dmap[termId]), children: seg.text }) }, i);
     }) });
   }
   function TermPopover() {
@@ -159,7 +163,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
         var _a;
         (_a = helpers()) == null ? void 0 : _a.discover(activeTermId);
         sdk.log(`Odkryto: ${term.data.term}`, "ok");
-      }, children: "Zapamiętaj" })
+      }, children: "Odkryj" })
     ] }) });
   }
   function buildConnections(treeId, postId, nodeTitle, terms, nodes) {
@@ -177,6 +181,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
         if (otherNid === currentNodeId) continue;
         const otherNode = nodes.find((n) => String(n.data.nodeId) === otherNid);
         if (otherNode) candidates.push({ nodeRec: otherNode, term });
+        else sdk.log(`Connection challenge skip: "${term.data.term}" → nieznany node "${otherNid}"`, "error");
       }
     }
     if (!candidates.length) return [];
@@ -195,6 +200,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
       const options = [correct, ...wrong].map((n) => ({ id: n.id, title: String(n.data.title) })).sort(() => Math.random() - 0.5);
       if (options.length < 2) continue;
       challenges.push({
+        termId: linkTerm.id,
         contextTitle: termName,
         contextType: String(correct.data.branch || ""),
         currentNodeTitle: nodeTitle,
@@ -248,7 +254,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
               if (connectionRevealed) return;
               useLocal.setState({ connectionAnswer: opt.id, connectionRevealed: true });
               if (opt.id === challenge.correctNodeId) {
-                (_a = helpers()) == null ? void 0 : _a.discover(challenge.correctNodeId);
+                (_a = helpers()) == null ? void 0 : _a.discover(challenge.termId);
               }
             },
             children: [
@@ -260,15 +266,10 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
         );
       }) }),
       connectionRevealed && /* @__PURE__ */ jsx(ui.Card, { color: isCorrect ? "success" : "error", children: /* @__PURE__ */ jsxs(ui.Stack, { gap: "sm", children: [
-        /* @__PURE__ */ jsx(ui.Text, { size: "sm", children: isCorrect ? `Tak! ${challenge.contextTitle} łączy ${challenge.currentNodeTitle} z ${challenge.correctNodeTitle}.` : `${challenge.contextTitle} pojawia się też w ${challenge.correctNodeTitle}. Zapamiętaj to połączenie!` }),
+        /* @__PURE__ */ jsx(ui.Text, { size: "sm", children: isCorrect ? `Tak! ${challenge.contextTitle} łączy ${challenge.currentNodeTitle} z ${challenge.correctNodeTitle}.` : `${challenge.contextTitle} pojawia się też w ${challenge.correctNodeTitle}. Odkryłeś nowe połączenie!` }),
         /* @__PURE__ */ jsx(ui.Button, { size: "sm", color: isCorrect ? "primary" : "neutral", outline: true, onClick: () => {
-          var _a;
-          const bq = (_a = sdk.shared.getState()) == null ? void 0 : _a.bq;
-          sdk.shared.setState({
-            bq: { ...bq, phase: "map" },
-            bqFlash: { from: challenge.currentNodeTitle, to: challenge.correctNodeTitle, context: challenge.contextTitle }
-          });
-          sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
+          sdk.shared.setState({ bqFlash: { from: challenge.currentNodeTitle, to: challenge.correctNodeTitle, context: challenge.contextTitle } });
+          toMap();
         }, children: "Zobacz na mapie" })
       ] }) })
     ] }) });
@@ -328,12 +329,7 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     const safeIdx = Math.min(slideIdx, steps.length - 1);
     const step = steps[safeIdx];
     const isConnection = step.kind === "connection";
-    const goBack = () => {
-      var _a;
-      const bq2 = (_a = sdk.shared.getState()) == null ? void 0 : _a.bq;
-      if (bq2) sdk.shared.setState({ bq: { ...bq2, phase: "map" } });
-      sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
-    };
+    const goBack = () => toMap();
     const goNext = () => useLocal.setState({
       slideIdx: safeIdx + 1,
       activeTermId: null,
@@ -375,38 +371,39 @@ const plugin = ({ React, ui, store, sdk, icons }) => {
     ] }) });
   }
   function LeftPanel() {
+    var _a, _b;
     const bq = sdk.shared((s) => s == null ? void 0 : s.bq);
     const treeId = (bq == null ? void 0 : bq.treeId) || "";
     const nodeId = (bq == null ? void 0 : bq.nodeId) || "";
     const lexicon = store.useChildren(treeId, "lexicon");
-    const discoveries = store.usePosts("discovery");
-    const discoveredSet = useMemo(
-      () => new Set(discoveries.map((d) => String(d.data.termId))),
-      [discoveries]
-    );
-    const nodeTerms = useMemo(() => {
-      return lexicon.filter((l) => {
+    const Shared = (_b = (_a = sdk.shared.getState()) == null ? void 0 : _a.bqHelpers) == null ? void 0 : _b.CheatSheet;
+    if (!Shared) return null;
+    const nodeTermIds = useMemo(() => {
+      const s = /* @__PURE__ */ new Set();
+      for (const l of lexicon) {
         const ns = jparse(String(l.data.nodes || "[]"), []);
-        return ns.includes(nodeId) && discoveredSet.has(l.id);
-      }).map((l) => ({ id: l.id, term: String(l.data.term || ""), definition: String(l.data.definition || "") }));
-    }, [lexicon, nodeId, discoveredSet]);
-    return /* @__PURE__ */ jsx(ui.Box, { header: /* @__PURE__ */ jsx(ui.Cell, { label: true, children: "Odkryte terminy" }), body: /* @__PURE__ */ jsxs(ui.Stack, { gap: "sm", children: [
-      /* @__PURE__ */ jsxs(ui.Button, { size: "sm", outline: true, onClick: () => {
-        sdk.shared.setState({ bq: { ...bq, phase: "map" } });
-        sdk.useHostStore.setState({ activeId: "plugin-brain-quest" });
-      }, children: [
-        /* @__PURE__ */ jsx(ChevronLeft, { size: 14 }),
-        " Wróć do mapy"
-      ] }),
-      nodeTerms.map((t) => /* @__PURE__ */ jsx(ui.Card, { children: /* @__PURE__ */ jsxs(ui.Stack, { gap: "xs", children: [
-        /* @__PURE__ */ jsx(ui.Text, { size: "xs", bold: true, children: t.term }),
-        /* @__PURE__ */ jsx(ui.Text, { size: "xs", muted: true, children: t.definition })
-      ] }) }, t.id))
-    ] }), grow: true });
+        if (ns.includes(nodeId)) s.add(l.id);
+      }
+      return s;
+    }, [lexicon, nodeId]);
+    return /* @__PURE__ */ jsx(
+      Shared,
+      {
+        filter: (id) => nodeTermIds.has(id),
+        onBack: () => toMap(),
+        backIcon: ChevronLeft
+      }
+    );
   }
+  const SharedProgress = () => {
+    var _a, _b;
+    const P = (_b = (_a = sdk.shared.getState()) == null ? void 0 : _a.bqHelpers) == null ? void 0 : _b.Progress;
+    return P ? /* @__PURE__ */ jsx(P, {}) : null;
+  };
   sdk.registerView("bqr.left", { slot: "left", component: LeftPanel });
   sdk.registerView("bqr.center", { slot: "center", component: SlideReader });
-  return { id: "plugin-brain-quest-reader", label: "BQ Czytnik", icon: BookOpen, version: "0.3.0" };
+  sdk.registerView("bqr.right", { slot: "right", component: SharedProgress });
+  return { id: "plugin-brain-quest-reader", label: "BQ Czytnik", icon: BookOpen, version: "0.4.0" };
 };
 export {
   plugin as default
